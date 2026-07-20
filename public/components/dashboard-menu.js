@@ -7,19 +7,10 @@ class DashboardMenu extends HTMLElement {
         
         shadow.innerHTML = `
             <style>
-                /* Usamos las variables globales de styles.css para consistencia */
-                :host {
-                    --primary-color: #0056b3; 
-                    --secondary-color: #ff9800;
-                    --text-color-light: white;
-                    --menu-bg: #2C3E50; /* CAMBIO: Fondo gris oscuro suave */
-                    --menu-hover-bg: #34495E; /* CAMBIO: Tono de gris para hover */
-                }
-
                 .menu-container {
                     width: 220px;
                     background-color: var(--menu-bg);
-                    color: var(--text-color-light);
+                    color: var(--menu-text-color);
                     padding: 20px 0;
                     height: 100vh;
                     display: flex;
@@ -48,7 +39,7 @@ class DashboardMenu extends HTMLElement {
                     align-items: center;
                     padding: 12px 20px;
                     text-decoration: none;
-                    color: var(--text-color-light);
+                    color: var(--menu-text-color);
                     transition: background-color 0.3s;
                     font-size: 0.9em;
                 }
@@ -66,7 +57,7 @@ class DashboardMenu extends HTMLElement {
                 /* Submenús */
                 .submenu {
                     display: none; 
-                    background-color: #34495E; /* Tono más suave para el submenú */
+                    background-color: var(--menu-hover-bg); 
                     padding-left: 30px;
                 }
                 .menu-item.expanded .submenu {
@@ -86,7 +77,7 @@ class DashboardMenu extends HTMLElement {
                     padding: 10px 20px;
                 }
                 #logoutButton {
-                    background-color: #e74c3c; /* CAMBIO: Rojo de logout más suave */
+                    background-color: #e74c3c; 
                     color: white;
                     border: none;
                     padding: 10px;
@@ -95,8 +86,10 @@ class DashboardMenu extends HTMLElement {
                     border-radius: 4px;
                     font-size: 0.9em;
                 }
+                :host-context(html.dark-mode) #logoutButton {
+                    background-color: #c0392b; /* Darker red for dark mode */
+                }
             </style>
-            <!-- ... (resto del HTML del menú se mantiene igual) ... -->
             <div class="menu-container">
                 <div class="logo">🏨 Hotel Admin</div>
                 <nav>
@@ -120,7 +113,7 @@ class DashboardMenu extends HTMLElement {
                                 <li><a href="/prices.html">Precios y Tarifas</a></li>
                                 <li><a href="/employees.html">Gestión Empleados</a></li>
                                 <li><a href="/shifts-planner.html">Planificador Turnos</a></li>
-                                <li><a href="/settings.html">Ajustes Cuenta</a></li>
+                                <li><a href="/settings-panel.html">Ajustes Cuenta</a></li>
                             </ul>
                         </li>
                     </ul>
