@@ -10,7 +10,7 @@ const saltRounds = 10; // Mismo nivel de seguridad que en database.js
 router.use(authenticateMiddleware);
 
 
-// Endpoints de habitaciones y reservas (sin cambios por ahora)
+// Endpoints de habitaciones y reservas
 // Endpoint para obtener todas las habitaciones
 router.get('/rooms', (req, res) => {
     db.all("SELECT * FROM rooms", [], (err, rows) => {
@@ -37,8 +37,7 @@ router.get('/bookings',(req, res) => {
     });
 });
 
-// Endpoint para crear una nueva reserva (ACTUALIZADO CON VALIDACIÓN)
-// Endpoint para crear una nueva reserva (ACTUALIZADO P1/P3)
+// Endpoint para crear una nueva reserva (ACTUALIZADO P1/P3 con validación de superposición robusta)
 router.post('/bookings', (req, res) => {
     const { room_id, client_name, start_date, end_date, status } = req.body;
 
@@ -53,17 +52,14 @@ router.post('/bookings', (req, res) => {
         }
         const price_per_night = room.price; // Capturamos el precio actual
 
-        // Lógica de validación de superposición... (mantenemos la misma lógica que tenías)
-        const query = `SELECT COUNT(*) as count FROM bookings 
-                       WHERE room_id = ? 
-                       AND (
-                           (start_date BETWEEN ? AND ?) OR 
-                           (end_date BETWEEN ? AND ?) OR
-                           (? BETWEEN start_date AND end_date) OR
-                           (? BETWEEN start_date AND end_date)
-                       )`;
+        // Lógica de validación de superposición robusta para intervalos [start, end)
+        // Un booking [S1, E1) y [S2, E2) se solapan si (S1 < E2) AND (E1 > S2)
+        const overlapQuery = `SELECT COUNT(*) as count FROM bookings 
+                              WHERE room_id = ? 
+                                AND status IN ('reserved', 'occupied') 
+                                AND ((? < end_date) AND (? > start_date))`;
         
-        db.get(query, [room_id, start_date, end_date, start_date, end_date, start_date, end_date], (err, row) => {
+        db.get(overlapQuery, [room_id, end_date, start_date], (err, row) => {
             if (err) {
                 res.status(500).json({"error": err.message});
                 return;
@@ -92,7 +88,7 @@ router.post('/bookings', (req, res) => {
     });
 });
 
-// Endpoint para ACTUALIZAR una reserva existente (ACTUALIZADO P1/P3)
+// Endpoint para ACTUALIZAR una reserva existente (ACTUALIZADO P1/P3 con validación de superposición robusta)
 router.put('/bookings/:id', (req, res) => {
     // Aceptamos price_per_night como un campo actualizable
     const { room_id, client_name, start_date, end_date, status, price_per_night } = req.body;
@@ -102,25 +98,46 @@ router.put('/bookings/:id', (req, res) => {
         return res.status(400).json({ error: "Faltan campos requeridos." });
     }
 
-    // Usamos COALESCE para solo actualizar price_per_night si se proporciona en el body, 
-    // manteniendo el valor anterior si no se especifica.
-    const update = `UPDATE bookings SET room_id = ?, client_name = ?, start_date = ?, end_date = ?, status = ?, price_per_night = COALESCE(?, price_per_night) WHERE id = ?`;
+    // Lógica de validación de superposición robusta para intervalos [start, end)
+    // Excluimos la propia reserva que se está actualizando con 'id != ?'
+    const overlapQuery = `SELECT COUNT(*) as count FROM bookings 
+                          WHERE room_id = ? 
+                            AND id != ? 
+                            AND status IN ('reserved', 'occupied') 
+                            AND ((? < end_date) AND (? > start_date))`;
     
-    // Pasamos price_per_night como un parámetro más
-    db.run(update, [room_id, client_name, start_date, end_date, status, price_per_night, id], function (err) {
+    db.get(overlapQuery, [room_id, id, end_date, start_date], (err, row) => {
         if (err) {
-            res.status(400).json({"error": err.message});
+            res.status(500).json({"error": err.message});
             return;
         }
-        if (this.changes > 0) {
-            res.status(200).json({ message: "Reserva actualizada exitosamente", changes: this.changes });
-        } else {
-            res.status(404).json({ error: "Reserva no encontrada." });
+
+        if (row.count > 0) {
+            res.status(409).json({ error: "Conflicto de reserva: La habitación ya está ocupada o reservada en esas fechas." });
+            return;
         }
+
+        // Si no hay superposición, procede con la actualización
+        // Usamos COALESCE para solo actualizar price_per_night si se proporciona en el body,
+        // manteniendo el valor anterior si no se especifica.
+        const update = `UPDATE bookings SET room_id = ?, client_name = ?, start_date = ?, end_date = ?, status = ?, price_per_night = COALESCE(?, price_per_night) WHERE id = ?`;
+        
+        // Pasamos price_per_night como un parámetro más
+        db.run(update, [room_id, client_name, start_date, end_date, status, price_per_night, id], function (err) {
+            if (err) {
+                res.status(400).json({"error": err.message});
+                return;
+            }
+            if (this.changes > 0) {
+                res.status(200).json({ message: "Reserva actualizada exitosamente", changes: this.changes });
+            } else {
+                res.status(404).json({ error: "Reserva no encontrada." });
+            }
+        });
     });
 });
 
-// Endpoint para obtener una reserva específica por su ID (NUEVO)
+// Endpoint para obtener una reserva específica por su ID
 router.get('/bookings/:id', (req, res) => {
     const { id } = req.params;
     db.get("SELECT * FROM bookings WHERE id = ?", [id], (err, row) => {
@@ -139,14 +156,14 @@ router.get('/bookings/:id', (req, res) => {
     });
 });
 
-// Función auxiliar para finalizar la actualización de la reserva
-function finalizeBookingUpdate(id, client_name, start_date, end_date, status, room_id, res) {
-    const updateQuery = `UPDATE bookings SET client_name = ?, start_date = ?, end_date = ?, status = ?, room_id = ? WHERE id = ?`;
-    db.run(updateQuery, [client_name, start_date, end_date, status, room_id, id], function (err) {
-        if (err) return res.status(400).json({"error": err.message});
-        res.json({ message: "Reserva actualizada exitosamente.", changes: this.changes });
-    });
-}
+// Eliminamos la función auxiliar 'finalizeBookingUpdate' ya que no se usa y la lógica se integró directamente en PUT /bookings/:id
+// function finalizeBookingUpdate(id, client_name, start_date, end_date, status, room_id, res) {
+//     const updateQuery = `UPDATE bookings SET client_name = ?, start_date = ?, end_date = ?, status = ?, room_id = ? WHERE id = ?`;
+//     db.run(updateQuery, [client_name, start_date, end_date, status, room_id, id], function (err) {
+//         if (err) return res.status(400).json({"error": err.message});
+//         res.json({ message: "Reserva actualizada exitosamente.", changes: this.changes });
+//     });
+// }
 
 router.delete('/bookings/:id', (req, res) => {
     const { id } = req.params;
@@ -156,7 +173,7 @@ router.delete('/bookings/:id', (req, res) => {
         if (err) return res.status(500).json({ "error": err.message });
         if (!row) return res.status(404).json({ "error": "Reserva no encontrada." });
 
-        if (row.status === 'occupied' || row.status === 'checked-in') {
+        if (row.status === 'occupied') { // Sólo 'occupied' debería impedir la cancelación. 'checked-in' no existe como estado persistente en tu código.
             return res.status(403).json({ "error": "No se puede cancelar una reserva con check-in realizado. Use el proceso de check-out." });
         }
 
@@ -168,19 +185,17 @@ router.delete('/bookings/:id', (req, res) => {
     });
 });
 
-// ... dentro de server.js, en la sección de API REST ...
-
-// Endpoint para obtener consumos de una reserva específica
-router.get('/consumptions/:bookingId', (req, res) => {
-    const { bookingId } = req.params;
-    db.all("SELECT * FROM consumptions WHERE booking_id = ?", [bookingId], (err, rows) => {
-        if (err) {
-            res.status(400).json({"error":err.message});
-            return;
-        }
-        res.json({ data: rows });
-    });
-});
+// Eliminamos el endpoint duplicado /consumptions/:bookingId
+// router.get('/consumptions/:bookingId', (req, res) => {
+//     const { bookingId } = req.params;
+//     db.all("SELECT * FROM consumptions WHERE booking_id = ?", [bookingId], (err, rows) => {
+//         if (err) {
+//             res.status(400).json({"error":err.message});
+//             return;
+//         }
+//         res.json({ data: rows });
+//     });
+// });
 
 // Endpoint para obtener consumos de una reserva específica
 router.get('/bookings/:bookingId/consumptions', (req, res) => {
@@ -256,7 +271,7 @@ router.put('/rooms/:id/price', (req, res) => {
     });
 });
 
-// Endpoint para GENERAR una factura a partir de una reserva (NUEVO P1.1)
+// Endpoint para GENERAR una factura a partir de una reserva
 router.post('/invoices/generate/:bookingId', (req, res) => {
     const { bookingId } = req.params;
     const { payment_method } = req.body; 
@@ -276,7 +291,7 @@ router.post('/invoices/generate/:bookingId', (req, res) => {
                 return res.status(500).json({ error: "Error al obtener consumos." });
             }
 
-            // Validar que el check-out ya se realizó antes de facturar (opcional, pero buena práctica)
+            // Validar que el check-out ya se realizó antes de facturar
             if (booking.status !== 'checked-out') {
                 return res.status(400).json({ error: "No se puede facturar una reserva que no ha completado el check-out." });
             }
@@ -284,10 +299,11 @@ router.post('/invoices/generate/:bookingId', (req, res) => {
             // 2. Calcular el total (la lógica ya la tenemos en el frontend, aquí la replicamos en backend por seguridad/integridad)
             const startDate = new Date(booking.start_date + 'T00:00:00Z');
             const endDate = new Date(booking.end_date + 'T00:00:00Z');
-            const durationDays = Math.ceil(Math.abs(endDate - startDate) / (1000 * 60 * 60 * 24));
+            // Usamos Math.round para consistencia con el frontend si las fechas son días completos
+            const durationDays = Math.round(Math.abs(endDate - startDate) / (1000 * 60 * 60 * 24));
             const stayCost = durationDays * booking.price_per_night;
             const consumptionsTotal = consumptions.reduce((sum, item) => sum + item.amount, 0);
-            const totalAmount = stayCost + consumptionsTotal;
+            const totalAmount = stayCost + consumptionsTotal; // El total antes de IVA, si se aplica luego
 
             // Preparamos detalles para guardar como JSON en la factura
             const invoiceDetails = JSON.stringify({
@@ -303,7 +319,13 @@ router.post('/invoices/generate/:bookingId', (req, res) => {
             const insert = 'INSERT INTO invoices (booking_id, invoice_number, issue_date, total_amount, details, payment_method) VALUES (?, ?, ?, ?, ?, ?)';
             // Pasamos payment_method como parámetro adicional
             db.run(insert, [bookingId, invoiceNumber, issueDate, totalAmount, invoiceDetails, payment_method], function (err) {
-                if (err) { return res.status(409).json({ error: "La reserva ya tiene una factura generada.", invoiceId: this.lastID }); }
+                if (err) { 
+                    // Manejo de error específico si la reserva ya tiene una factura
+                    if (err.message.includes('UNIQUE constraint failed: invoices.booking_id')){
+                        return res.status(409).json({ error: "Esta reserva ya tiene una factura generada.", invoiceId: this.lastID });
+                    }
+                    return res.status(400).json({ error: err.message }); 
+                }
                 
                 // ... (Lógica de actualizar estado de limpieza a 'dirty' se mantiene igual) ...
                 db.run('UPDATE rooms SET clean_status = ? WHERE id = ?', ['dirty', booking.room_id], (updateErr) => {
@@ -323,7 +345,7 @@ router.post('/invoices/generate/:bookingId', (req, res) => {
     });
 });
 
-// Endpoint para obtener una factura específica por su ID (NUEVO P1.1)
+// Endpoint para obtener una factura específica por su ID
 router.get('/invoices/:id', (req, res) => {
     const { id } = req.params;
     db.get("SELECT * FROM invoices WHERE id = ?", [id], (err, invoice) => {
@@ -337,10 +359,10 @@ router.get('/invoices/:id', (req, res) => {
     });
 });
 
-// Endpoint para listar TODAS las facturas (NUEVO P1.1)
+// Endpoint para listar TODAS las facturas
 router.get('/invoices', (req, res) => {
     // Para el listado general, no necesitamos los 'details' completos, solo un resumen
-    db.all("SELECT id, booking_id, invoice_number, issue_date, total_amount FROM invoices ORDER BY issue_date DESC", [], (err, rows) => {
+    db.all("SELECT id, booking_id, invoice_number, issue_date, total_amount, payment_method FROM invoices ORDER BY issue_date DESC", [], (err, rows) => {
         if (err) {
             res.status(500).json({ error: err.message });
             return;
@@ -385,8 +407,8 @@ router.delete('/employees/:id', (req, res) => {
 router.get('/shifts', (req, res) => {
     const { year, month } = req.query; 
     if (!year || !month) { return res.status(400).json({ error: "Se requieren año y mes." }); }
-    const startDate = `${year}-${month}-01`;
-    const endDate = `${year}-${month}-31`; // Simplificado para el mes
+    const startDate = `${year}-${month.padStart(2, '0')}-01`;
+    const endDate = `${year}-${month.padStart(2, '0')}-31`; // Simplificado para el mes (asume max 31 días)
 
     db.all("SELECT * FROM shifts WHERE shift_date BETWEEN ? AND ?", [startDate, endDate], (err, rows) => {
         if (err) { res.status(500).json({ error: err.message }); return; }
@@ -407,9 +429,6 @@ router.post('/shifts', (req, res) => {
         res.status(201).json({ message: "Turno guardado.", id: this.lastID });
     });
 });
-
-// Puedes añadir endpoints POST, PUT, DELETE para empleados si lo necesitas más adelante (CRUD completo)
-// Pero por ahora GET es suficiente para el reporte.
 
 
 // --- Endpoints de Gastos (Expenses) (P7) ---
@@ -440,13 +459,14 @@ router.get('/reports/profit-loss', (req, res) => {
     }
 
     // SQLite usa formato TEXT YYYY-MM-DD. Filtramos por rango de fechas.
-    const startDate = `${year}-${month}-01`;
-    // Calcular el último día del mes (un poco complejo en SQL puro, más fácil en JS)
-    const lastDay = new Date(year, month, 0).getDate(); 
-    const endDate = `${year}-${month}-${lastDay}`;
+    const monthPadded = month.padStart(2, '0');
+    const startDate = `${year}-${monthPadded}-01`;
+    // Calcular el último día del mes
+    const lastDay = new Date(year, parseInt(month) , 0).getDate(); // month es 1-indexed para el constructor de Date si se usa el 0 para el día.
+    const endDate = `${year}-${monthPadded}-${lastDay.toString().padStart(2, '0')}`;
     
     const responseData = {
-        period: `${year}-${month}`,
+        period: `${year}-${monthPadded}`,
         invoicesTotal: 0,
         expensesTotal: 0,
         salariesTotal: 0,
@@ -456,23 +476,22 @@ router.get('/reports/profit-loss', (req, res) => {
     // 1. Calcular Ingresos (Total Facturado en el mes)
     const invoicesQuery = `SELECT SUM(total_amount) as total FROM invoices WHERE issue_date BETWEEN ? AND ?`;
     db.get(invoicesQuery, [startDate, endDate], (err, row) => {
-        if (err) return res.status(500).json({ error: "en invoice query" });
+        if (err) return res.status(500).json({ error: "Error en consulta de ingresos: " + err.message });
         responseData.invoicesTotal = row.total || 0;
 
         // 2. Calcular Gastos Operativos (en el mes)
         const expensesQuery = `SELECT SUM(amount) as total FROM expenses WHERE date BETWEEN ? AND ?`;
         db.get(expensesQuery, [startDate, endDate], (err, row) => {
-            if (err) return res.status(500).json({ error: "en expenses query" });
+            if (err) return res.status(500).json({ error: "Error en consulta de gastos: " + err.message });
             responseData.expensesTotal = row.total || 0;
 
-            // 3. Calcular Sueldos (Asumimos que todos los empleados cobran cada mes, independientemente de la fecha de gasto)
+            // 3. Calcular Sueldos (Asumimos que todos los empleados cobran cada mes)
             const salariesQuery = `SELECT SUM(monthly_salary) as total FROM employees`;
             db.get(salariesQuery, (err, row) => { 
                 if (err) { 
                     console.error(err); 
-                    return res.status(500).json({ error: "Error 500 en consulta de Sueldos: " + err.message });
+                    return res.status(500).json({ error: "Error en consulta de Sueldos: " + err.message });
                 }
-                // CLAVE: Nos aseguramos de manejar 'row' aunque 'total' sea null/undefined (si no hay empleados)
                 responseData.salariesTotal = (row && row.total) || 0; 
                 
                 // 4. Calcular Ganancia
