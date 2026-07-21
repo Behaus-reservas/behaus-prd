@@ -22,7 +22,8 @@ const db = new sqlite3.Database('./hotel_bookings.db', (err) => {
             client_name TEXT NOT NULL,
             start_date TEXT NOT NULL,
             end_date TEXT NOT NULL,
-            status TEXT NOT NULL
+            status TEXT NOT NULL,
+            price_per_night REAL NOT NULL DEFAULT 0.0 -- AÑADIDO: Precio por noche específico para la reserva
         )`);
         // NUEVO: Tabla de usuarios
         db.run(`CREATE TABLE IF NOT EXISTS users (
@@ -44,7 +45,7 @@ const db = new sqlite3.Database('./hotel_bookings.db', (err) => {
             issue_date TEXT NOT NULL,
             total_amount REAL NOT NULL,
             details TEXT, -- Un campo JSON o texto para guardar los detalles de la línea (estadia y consumos)
-            payment_method TEXT NOT NULL DEFAULT 'Contado', 
+            payment_method TEXT NOT NULL DEFAULT 'Contado', -- AÑADIDO: Método de pago
             FOREIGN KEY(booking_id) REFERENCES bookings(id)
         );`);
 
